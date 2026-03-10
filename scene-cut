@@ -72,38 +72,57 @@ input_name="${input_nopath%.*}"
 trim_video () {
 # awk convert start and end time from sexagesimal time to seconds
 # add the start and end time to get the endpoint and convert from seconds back to sexagesimal time
-    endtime=$(printf "%s %s\n" "${start}" "${duration}" \
-    | awk '
-            {
-              start = $1
-              end = $2
-              if (start ~ /:/) {
-                split(start, t, ":")
-                sseconds = (t[1] * 3600) + (t[2] * 60) + t[3] 
-              }
-              if (end ~ /:/) {
-                split(end, t, ":")
-                eseconds = (t[1] * 3600) + (t[2] * 60) + t[3] 
-              }
-              duration = eseconds + sseconds
-              printf("%s\n"), duration
-         }' \
-    | awk -F. 'NF==1 { printf("%02d:%02d:%02d\n"), ($1 / 3600), ($1 % 3600 / 60), ($1 % 60) }\
-    NF==2 { printf("%02d:%02d:%02d.%s\n"), ($1 / 3600), ($1 % 3600 / 60), ($1 % 60), ($2) }'
-    )
-    output="${input_name}-[${start}-${endtime}].mp4" 
-    ffmpeg \
-    -nostdin \
-    -hide_banner \
-    -stats -v panic \
-    -ss "${start}" \
-    -i "${input}" \
-    -t "${duration}" \
-    -c:a aac \
-    -c:v libx264 -profile:v high \
-    -pix_fmt yuv420p -movflags +faststart \
-    -f mp4 \
-    "${output}"
+    # endtime=$(printf "%s %s\n" "${start}" "${duration}" \
+    # | awk '
+    #         {
+    #           start = $1
+    #           end = $2
+    #           if (start ~ /:/) {
+    #             split(start, t, ":")
+    #             sseconds = (t[1] * 3600) + (t[2] * 60) + t[3] 
+    #           }
+    #           if (end ~ /:/) {
+    #             split(end, t, ":")
+    #             eseconds = (t[1] * 3600) + (t[2] * 60) + t[3] 
+    #           }
+    #           duration = eseconds + sseconds
+    #           printf("%s\n"), duration
+    #      }' \
+    # | awk -F. 'NF==1 { printf("%02d:%02d:%02d\n"), ($1 / 3600), ($1 % 3600 / 60), ($1 % 60) }\
+    # NF==2 { printf("%02d:%02d:%02d.%s\n"), ($1 / 3600), ($1 % 3600 / 60), ($1 % 60), ($2) }'
+    # )
+    # output="${input_name}-[${start}-${endtime}].mp4" 
+
+    elapsed=$(echo "$duration" | awk -F: '
+      {
+        split($3, sec, ".");        # Split seconds and milliseconds if present
+        hours = $1 * 3600;          # Convert hours to seconds
+        minutes = $2 * 60;          # Convert minutes to seconds
+        seconds = sec[1];           # Seconds as integer
+        total_seconds = hours + minutes + seconds;
+        print int(total_seconds);    # Print as integer
+      }')
+    # echo "$elapsed"
+
+    if [ "$elapsed" -gt 1 ]; then 
+      output=$(printf "${input_name}-%04d.mp4\n" "$count")
+      count=$(expr $count + 1)
+
+      ffmpeg \
+      -nostdin \
+      -hide_banner \
+      -stats -v panic \
+      -ss "${start}" \
+      -i "${input}" \
+      -t "${duration}" \
+      -c:a aac \
+      -c:v libx264 -profile:v high \
+      -pix_fmt yuv420p -movflags +faststart \
+      -f mp4 \
+      "${output}"
+    else
+      echo "skipping $start, $duration"
+    fi
 }
 
 
