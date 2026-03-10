@@ -9,6 +9,9 @@
 # dependencies:
 # ffmpeg, scene-detect, scene-time, yt-dlp, zip
 
+# prepend this script's directory to PATH so sibling scripts are always found
+PATH="$(cd "$(dirname "$0")" && pwd):${PATH}"
+
 #===============================================================================
 # script usage
 #===============================================================================
