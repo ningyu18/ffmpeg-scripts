@@ -19,13 +19,14 @@ PATH="$(cd "$(dirname "$0")" && pwd):${PATH}"
 usage () {
 [ -z "${1}" ] || echo "! ${1}"
 echo "\
-$(basename "$0") -i input -t threshold [-m video|image] [-p pad] [-j jobs] [-o output.zip]
+$(basename "$0") -i input -t threshold [-m video|image] [-p pad] [-b start|end] [-j jobs] [-o output.zip]
 
 -i  input.(mp4|mov|mkv|m4v) or YouTube video ID
 -t  threshold 0.1-0.9
 -m  video (default) or image
 -p  silence pad in seconds appended to each video clip (default: 0, video mode only)
--j  max parallel ffmpeg jobs (default: number of cpu cores)
+-b  add a beep tone at the start or end of each video clip (video mode only)
+-j  max parallel ffmpeg jobs (default: 1)
 -o  output.zip (default: inputname-scenes-YYYY-MM-DD-HH-MM-SS.zip)"
 exit 2
 }
@@ -51,13 +52,14 @@ WRONG_ARGS_ERR='wrong number of arguments passed to script'
 # getopts check the options passed to the script
 #===============================================================================
 
-while getopts ':i:t:m:p:j:o:h' opt
+while getopts ':i:t:m:p:b:j:o:h' opt
 do
   case ${opt} in
      i) input="${OPTARG}";;
      t) threshold="${OPTARG}";;
      m) mode="${OPTARG}";;
      p) pad="${OPTARG}";;
+     b) beep="${OPTARG}";;
      j) max_jobs="${OPTARG}";;
      o) output_zip="${OPTARG}";;
      h) usage;;
@@ -85,6 +87,14 @@ esac
 pad="${pad:-0}"
 max_jobs="${max_jobs:-1}"
 
+case "${beep}" in
+  start|end|'') ;;
+  *) usage "beep must be 'start' or 'end'";;
+esac
+
+beep_dur=0.3
+beep_freq=1000
+
 
 #===============================================================================
 # throttle: run background jobs up to max_jobs at a time
@@ -98,6 +108,40 @@ throttle () {
   if [ "${jobs_running}" -ge "${max_jobs}" ]; then
     wait
     jobs_running=0
+  fi
+}
+
+
+#===============================================================================
+# cut_clip: encode one clip, optionally mixing in a beep tone
+# expects: $input $start $duration $output $delay_ms $beep $beep_dur $beep_freq
+#===============================================================================
+
+cut_clip () {
+  if [ -z "${beep}" ]; then
+    ffmpeg \
+      -nostdin -hide_banner -stats -v panic \
+      -ss "${start}" -i "${input}" -t "${duration}" \
+      -c:a aac -c:v libx264 -profile:v high \
+      -pix_fmt yuv420p -movflags +faststart -f mp4 "${output}"
+  elif [ "${beep}" = "start" ]; then
+    ffmpeg \
+      -nostdin -hide_banner -stats -v panic \
+      -ss "${start}" -i "${input}" -t "${duration}" \
+      -f lavfi -i "sine=frequency=${beep_freq}:duration=${beep_dur}:sample_rate=44100" \
+      -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[outa]" \
+      -map 0:v -map "[outa]" \
+      -c:a aac -c:v libx264 -profile:v high \
+      -pix_fmt yuv420p -movflags +faststart -f mp4 "${output}"
+  elif [ "${beep}" = "end" ]; then
+    ffmpeg \
+      -nostdin -hide_banner -stats -v panic \
+      -ss "${start}" -i "${input}" -t "${duration}" \
+      -f lavfi -i "sine=frequency=${beep_freq}:duration=${beep_dur}:sample_rate=44100" \
+      -filter_complex "[1:a]adelay=${delay_ms}|${delay_ms}[delayed];[0:a][delayed]amix=inputs=2:duration=first:normalize=0[outa]" \
+      -map 0:v -map "[outa]" \
+      -c:a aac -c:v libx264 -profile:v high \
+      -pix_fmt yuv420p -movflags +faststart -f mp4 "${output}"
   fi
 }
 
@@ -168,20 +212,15 @@ if [ "${mode}" = "video" ]; then
     if [ "${elapsed}" -gt 1 ]; then
       output=$(printf "${input_name}-%04d.mp4" "${count}")
       count=$((count + 1))
-      (
-        ffmpeg \
-          -nostdin \
-          -hide_banner \
-          -stats -v panic \
-          -ss "${start}" \
-          -i "${input}" \
-          -t "${duration}" \
-          -c:a aac \
-          -c:v libx264 -profile:v high \
-          -pix_fmt yuv420p -movflags +faststart \
-          -f mp4 \
-          "${output}"
-      ) &
+      delay_ms=0
+      if [ "${beep}" = "end" ]; then
+        delay_ms=$(printf '%s\n' "${duration}" | awk -F: -v bdur="${beep_dur}" '{
+          secs = $1*3600 + $2*60 + $3
+          delay = (secs - bdur) * 1000
+          printf "%.0f", (delay < 0 ? 0 : delay)
+        }')
+      fi
+      ( cut_clip ) &
       throttle
     else
       echo "skipping ${start}, ${duration}"
